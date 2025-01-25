@@ -1,3 +1,4 @@
+#include <ostream>
 #include <stdlib.h>
 #include <iostream>
 #include <string.h>
@@ -13,6 +14,9 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+#include "wavelib.h"
+
+
 typedef struct {
     VSNode *node;
     VSNode *ref1;
@@ -25,191 +29,53 @@ typedef struct {
     bool has_ref2;
 } SpannsData;
 
-// Stolen from pywt
-namespace wavelets {
-    const std::vector<double> bior1_1_dec_lo = {0.7071067811865476, 0.7071067811865476};
-    const std::vector<double> bior1_1_dec_hi = {-0.7071067811865476, 0.7071067811865476};
-    const std::vector<double> bior1_1_rec_lo = {0.7071067811865476, 0.7071067811865476};
-    const std::vector<double> bior1_1_rec_hi = {0.7071067811865476, -0.7071067811865476};
-    
-    const std::vector<double> coif1_dec_lo = {-0.015655728135791993, -0.07273261951252645, 0.3848648468648578, 0.8525720202116004, 0.3378976624574818, -0.07273261951252645};
-    const std::vector<double> coif1_dec_hi = {0.07273261951252645, 0.3378976624574818, -0.8525720202116004, 0.3848648468648578, 0.07273261951252645, -0.015655728135791993};
-    const std::vector<double> coif1_rec_lo = {-0.07273261951252645, 0.3378976624574818, 0.8525720202116004, 0.3848648468648578, -0.07273261951252645, -0.015655728135791993};
-    const std::vector<double> coif1_rec_hi = {-0.015655728135791993, 0.07273261951252645, 0.3848648468648578, -0.8525720202116004, 0.3378976624574818, 0.07273261951252645};
-}
-
-static void upsample(const std::vector<float>& input, std::vector<float>& output) {
-    output.resize(input.size() * 2);
-    for (size_t i = 0; i < input.size(); i++) {
-        output[i * 2] = input[i];
-        output[i * 2 + 1] = 0;
-    }
-}
-
-static void conv1d(const std::vector<float>& input, const std::vector<double>& kernel,
-                    std::vector<float>& output, int stride = 1) {
-    int n = input.size();
-    int m = kernel.size();
-    output.resize((n + m - 1) / stride);
-    
-    for (size_t i = 0; i < output.size(); i++) {
-        float sum = 0;
-        for (int j = 0; j < m; j++) {
-            int idx = i * stride + j;
-            if (idx < n) {
-                sum += input[idx] * kernel[j];
-            }
-        }
-        output[i] = sum;
-    }
-}
-
-static std::vector<float> periodic_pad(const std::vector<float>& input, int pad_size) {
-    std::vector<float> padded(input.size() + 2 * pad_size);
-    for (size_t i = 0; i < padded.size(); i++) {
-        padded[i] = input[(i - pad_size + input.size()) % input.size()];
-    }
-    return padded;
-}
-
-static void dwt1d(const std::vector<float>& input, const std::vector<double>& dec_lo,
-                    const std::vector<double>& dec_hi, std::vector<float>& cA, std::vector<float>& cD) {
-    int pad_size = dec_lo.size() - 1;
-    auto padded = periodic_pad(input, pad_size);
-    
-    conv1d(padded, dec_lo, cA, 2);
-    conv1d(padded, dec_hi, cD, 2);
-    
-    int offset = pad_size / 2;
-    if (offset > 0) {
-        cA.erase(cA.begin(), cA.begin() + offset);
-        cD.erase(cD.begin(), cD.begin() + offset);
-        cA.resize(input.size() / 2);
-        cD.resize(input.size() / 2);
-    }
-}
-
-static void idwt1d(const std::vector<float>& cA, const std::vector<float>& cD,
-                    const std::vector<double>& rec_lo, const std::vector<double>& rec_hi,
-                    std::vector<float>& output) {
-    std::vector<float> upsampled_cA, upsampled_cD;
-    upsample(cA, upsampled_cA);
-    upsample(cD, upsampled_cD);
-    
-    std::vector<float> rec_lo_conv, rec_hi_conv;
-    conv1d(upsampled_cA, rec_lo, rec_lo_conv);
-    conv1d(upsampled_cD, rec_hi, rec_hi_conv);
-    
-    int size = std::min(rec_lo_conv.size(), rec_hi_conv.size());
-    output.resize(size);
-    for (int i = 0; i < size; i++) {
-        output[i] = rec_lo_conv[i] + rec_hi_conv[i];
-    }
-}
-
-static void dwt2d(const cv::Mat& input, const std::vector<double>& dec_lo,
-                    const std::vector<double>& dec_hi, cv::Mat& coeffs) {
-    int height = input.rows;
-    int width = input.cols;
-    
-    std::vector<float> row(width);
-    std::vector<float> cA, cD;
-    cv::Mat temp(height, width, CV_32F);
-    
-    for (int i = 0; i < height; i++) {
-        for (int j = 0; j < width; j++) {
-            row[j] = input.at<float>(i, j);
-        }
-        
-        dwt1d(row, dec_lo, dec_hi, cA, cD);
-        
-        for (int j = 0; j < width/2; j++) {
-            temp.at<float>(i, j) = cA[j];
-            temp.at<float>(i, j + width/2) = cD[j];
-        }
-    }
-    
-    std::vector<float> col(height);
-    coeffs = cv::Mat(height, width, CV_32F);
-    
-    for (int j = 0; j < width; j++) {
-        for (int i = 0; i < height; i++) {
-            col[i] = temp.at<float>(i, j);
-        }
-        
-        dwt1d(col, dec_lo, dec_hi, cA, cD);
-        
-        for (int i = 0; i < height/2; i++) {
-            coeffs.at<float>(i, j) = cA[i];
-            coeffs.at<float>(i + height/2, j) = cD[i];
-        }
-    }
-}
-
-static void idwt2d(const cv::Mat& coeffs, const std::vector<double>& rec_lo,
-                    const std::vector<double>& rec_hi, cv::Mat& output) {
-    int height = coeffs.rows;
-    int width = coeffs.cols;
-    
-    std::vector<float> col_cA(height/2), col_cD(height/2);
-    cv::Mat temp(height, width, CV_32F);
-    
-    for (int j = 0; j < width; j++) {
-        for (int i = 0; i < height/2; i++) {
-            col_cA[i] = coeffs.at<float>(i, j);
-            col_cD[i] = coeffs.at<float>(i + height/2, j);
-        }
-        
-        std::vector<float> reconstructed_col;
-        idwt1d(col_cA, col_cD, rec_lo, rec_hi, reconstructed_col);
-        
-        for (int i = 0; i < height; i++) {
-            temp.at<float>(i, j) = reconstructed_col[i];
-        }
-    }
-    
-    std::vector<float> row_cA(width/2), row_cD(width/2);
-    output = cv::Mat(height, width, CV_32F);
-    
-    for (int i = 0; i < height; i++) {
-        for (int j = 0; j < width/2; j++) {
-            row_cA[j] = temp.at<float>(i, j);
-            row_cD[j] = temp.at<float>(i, j + width/2);
-        }
-        
-        std::vector<float> reconstructed_row;
-        idwt1d(row_cA, row_cD, rec_lo, rec_hi, reconstructed_row);
-        
-        for (int j = 0; j < width; j++) {
-            output.at<float>(i, j) = reconstructed_row[j];
-        }
-    }
-}
-
 static void wavelet_transform(const cv::Mat& input, const char* wavelet_type, cv::Mat& details) {
-    cv::Mat coeffs;
-    const std::vector<double> *dec_lo, *dec_hi, *rec_lo, *rec_hi;
-
+    wave_object obj;
+    wt2_object wt;
+    
     if (strcmp(wavelet_type, "bior1.1") == 0) {
-        dec_lo = &wavelets::bior1_1_dec_lo;
-        dec_hi = &wavelets::bior1_1_dec_hi;
-        rec_lo = &wavelets::bior1_1_rec_lo;
-        rec_hi = &wavelets::bior1_1_rec_hi;
-    } 
-    else {
-        dec_lo = &wavelets::coif1_dec_lo;
-        dec_hi = &wavelets::coif1_dec_hi;
-        rec_lo = &wavelets::coif1_rec_lo;
-        rec_hi = &wavelets::coif1_rec_hi;
+        obj = wave_init("bior1.1");
+    } else {
+        obj = wave_init("coif1");
     }
     
-    dwt2d(input, *dec_lo, *dec_hi, coeffs);
+    int rows = input.rows;
+    int cols = input.cols;
     
-    int half_height = coeffs.rows / 2;
-    int half_width = coeffs.cols / 2;
-    coeffs(cv::Rect(0, 0, half_width, half_height)).setTo(cv::Scalar(0));
+    double* inp = (double*)malloc(sizeof(double) * rows * cols);
+    for(int i = 0; i < rows; i++) {
+        for(int j = 0; j < cols; j++) {
+            inp[i*cols + j] = input.at<float>(i,j);
+        }
+    }
     
-    idwt2d(coeffs, *rec_lo, *rec_hi, details);
+    wt = wt2_init(obj, "dwt", rows, cols, 1);
+    
+    double* out = dwt2(wt, inp);
+    
+    int J = wt->J;
+    int rJ = rows >> J;
+    int cJ = cols >> J;
+    for(int i = 0; i < rJ * cJ; i++) {
+        out[i] = 0.0;
+    }
+    
+    double* final = (double*)malloc(sizeof(double) * rows * cols);
+    
+    idwt2(wt, out, final);
+    
+    details = cv::Mat(rows, cols, CV_32F);
+    for(int i = 0; i < rows; i++) {
+        for(int j = 0; j < cols; j++) {
+            details.at<float>(i,j) = (float)final[i*cols + j];
+        }
+    }
+    
+    free(inp);
+    free(out);
+    free(final);
+    wave_free(obj);
+    wt2_free(wt);
 }
 
 static void generate_mask(const float* src, int width, int height, float gamma, float* mask) {
@@ -248,6 +114,7 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
         cv::min(B, cv::Scalar(1.0f), B); 
         cv::max(B, cv::Scalar(0.0f), B);
     } else {
+        // std::cerr<<"thresh > min_val!"<<std::endl;
         B = cv::Mat::zeros(B.size(), CV_32F);
     }
     

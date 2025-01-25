@@ -1,16 +1,16 @@
-project('spanns', 'cpp',
+project('spanns', 'cpp','c',
   default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++17'],
   license: 'GPL-3.0-or-later',
   meson_version: '>=0.51.0',
   version: '4.1'
 )
 
+c = meson.get_compiler('c')
 cxx = meson.get_compiler('cpp')
 host_system = host_machine.system()
 host_cpu = host_machine.cpu_family()
 
 gcc_syntax = cxx.get_argument_syntax() == 'gcc'
-add_project_arguments(gcc_syntax ? ['-O3'] : '/GS-', language: 'cpp')
 
 eigen_dep = dependency('eigen3', required: true)
 opencv_dep = dependency('opencv4', modules: ['core', 'imgproc'], required: true)
@@ -66,6 +66,28 @@ if compile_args.length() > 0
   add_project_arguments(compile_args, language: 'cpp')
 endif
 
+wavelib_src = [
+    'spanns/wavelib/src/conv.c',
+    'spanns/wavelib/src/cwt.c',
+    'spanns/wavelib/src/cwtmath.c',
+    'spanns/wavelib/src/hsfft.c',
+    'spanns/wavelib/src/real.c',
+    'spanns/wavelib/src/wavefilt.c',
+    'spanns/wavelib/src/wavefunc.c',
+    'spanns/wavelib/src/wavelib.c',
+    'spanns/wavelib/src/wtmath.c',
+]
+
+wavelib_lib = static_library('wavelib',
+    wavelib_src,
+    include_directories: include_directories('spanns/wavelib/header')
+)
+
+wavelib_dep = declare_dependency(
+    link_with: wavelib_lib,
+    include_directories: include_directories('spanns/wavelib/header')
+)
+
 # VapourSynth handling
 if gcc_syntax
   vapoursynth_dep = dependency('vapoursynth', version: '>=55', required: false).partial_dependency(compile_args: true, includes: true)
@@ -80,7 +102,7 @@ sources = [
 ]
 
 shared_module('spanns', sources,
-  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep] + blas_lapack_dep,
+  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep, wavelib_dep] + blas_lapack_dep,
   link_args: link_args,
   install: true,
   install_dir: install_dir,
