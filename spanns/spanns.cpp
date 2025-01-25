@@ -512,7 +512,7 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
     if (!vsh::isConstantVideoFormat(vi) || vi->format.sampleType != stFloat || 
         vi->format.bitsPerSample != 32 ||
         (vi->format.numPlanes != 1 && vi->format.numPlanes != 3)) {
-        vsapi->mapSetError(out, "Spanns: only constant format 32bit float input supported (GRAYS or YUV444PS)");
+        vsapi->mapSetError(out, "Spanns: only constant format 32bit float input supported");
         vsapi->freeNode(d.node);
         return;
     }
@@ -543,7 +543,7 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
     vspapi->configPlugin("com.yuygfgg.spanns", "spanns", 
                         "SPANNS Denoising", VS_MAKE_VERSION(1, 0), 
                         VAPOURSYNTH_API_VERSION, 0, plugin);
-    vspapi->registerFunction("Filter",
+    vspapi->registerFunction("SPANNS",
                             "clip:vnode;ref1:vnode:opt;ref2:vnode:opt;"
                             "sigma:float:opt;tol:float:opt;gamma:float:opt;"
                             "passes:int:opt;",
