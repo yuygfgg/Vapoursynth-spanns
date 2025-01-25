@@ -12,9 +12,9 @@ host_cpu = host_machine.cpu_family()
 gcc_syntax = cxx.get_argument_syntax() == 'gcc'
 add_project_arguments(gcc_syntax ? ['-O3'] : '/GS-', language: 'cpp')
 
-eigen_dep = dependency('eigen3')
-opencv_dep = dependency('opencv4', modules: ['core', 'imgproc'], required: false)
-gsl_dep = dependency('gsl', required: false)
+eigen_dep = dependency('eigen3', required: true)
+opencv_dep = dependency('opencv4', modules: ['core', 'imgproc'], required: true)
+boost_dep = dependency('boost', required: true)
 
 # Initialize BLAS/LAPACK dependencies and compile args
 blas_lapack_dep = []
@@ -80,7 +80,7 @@ sources = [
 ]
 
 shared_module('spanns', sources,
-  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, gsl_dep] + blas_lapack_dep,
+  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep] + blas_lapack_dep,
   link_args: link_args,
   install: true,
   install_dir: install_dir,

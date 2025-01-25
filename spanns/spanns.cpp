@@ -7,15 +7,11 @@
 #include <vector>
 #include "VapourSynth4.h"
 #include "VSHelper4.h"
+#include <boost/sort/pdqsort/pdqsort.hpp>
 #include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
-#include <gsl/gsl_statistics.h>
-#include <gsl/gsl_cdf.h>
-#include <gsl/gsl_math.h>
-#include <gsl/gsl_integration.h>
-#include <gsl/gsl_spline.h>
 
 typedef struct {
     VSNode *node;
@@ -211,8 +207,7 @@ static void wavelet_transform(const cv::Mat& input, const char* wavelet_type, cv
     
     int half_height = coeffs.rows / 2;
     int half_width = coeffs.cols / 2;
-    cv::Mat roi = coeffs(cv::Rect(0, 0, half_width, half_height));
-    roi = cv::Scalar(0);
+    coeffs(cv::Rect(0, 0, half_width, half_height)).setTo(cv::Scalar(0));
     
     idwt2d(coeffs, *rec_lo, *rec_hi, details);
 }
@@ -225,13 +220,15 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
     wavelet_transform(src_mat, "bior1.1", B1);
     wavelet_transform(src_mat, "coif1", B2);
     
-    cv::absdiff(B1, cv::Scalar(0), B1);
-    cv::absdiff(B2, cv::Scalar(0), B2);
+    cv::Mat abs_B1, abs_B2;
+    cv::absdiff(B1, cv::Scalar(0), abs_B1);
+    cv::absdiff(B2, cv::Scalar(0), abs_B2);
     
     cv::Mat B;
-    cv::max(B1, B2, B);
+    cv::max(abs_B1, abs_B2, B);
     
-    cv::dilate(B, B, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3,3)));
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3,3));
+    cv::dilate(B, B, kernel);
     
     std::vector<float> sorted_data;
     sorted_data.reserve(width * height);
@@ -239,15 +236,17 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
         const float* row = B.ptr<float>(i);
         sorted_data.insert(sorted_data.end(), row, row + width);
     }
-    std::sort(sorted_data.begin(), sorted_data.end());
+    boost::sort::pdqsort(sorted_data.begin(), sorted_data.end());
     
     float thresh = sorted_data[static_cast<int>(gamma * (width * height - 1))];
     float min_val = sorted_data[0];
     
     if (thresh > min_val) {
-        // (B - min_val) / (thresh - min_val)
-        B.convertTo(B, CV_32F, 1.0/(thresh - min_val), -min_val/(thresh - min_val));
-        cv::threshold(B, B, 1.0, 1.0, cv::THRESH_TRUNC);
+        float scale = 1.0f / (thresh - min_val);
+        float offset = -min_val * scale;
+        B.convertTo(B, CV_32F, scale, offset);
+        cv::min(B, cv::Scalar(1.0f), B); 
+        cv::max(B, cv::Scalar(0.0f), B);
     } else {
         B = cv::Mat::zeros(B.size(), CV_32F);
     }
@@ -255,99 +254,106 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
     memcpy(mask, B.ptr<float>(), width * height * sizeof(float));
 }
 
-static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
-    std::vector<double> x(singular_values.data(), singular_values.data() + singular_values.size());
-    size_t n = x.size();
-    std::sort(x.begin(), x.end());
-    
-    double q05 = gsl_stats_quantile_from_sorted_data(&x[0], 1, n, 0.05);
-    double q95 = gsl_stats_quantile_from_sorted_data(&x[0], 1, n, 0.95);
-    
-    double a = std::sqrt(q05);
-    double b = std::sqrt(q95);
-    
-    double sigma = std::sqrt((a + b) * (a + b) / 4.0);
-    double ratio = std::sqrt((b - a) / (a + b));
-    
-    return {1.0, sigma, ratio}; // beta = 1.0 for real matrices
-}
-
-struct mp_params {
-    double beta;
-    double sigma;
-    double ratio;
-};
-
-static double mp_pdf(double x, void* params) {
-    mp_params* p = (mp_params*)params;
-    double beta = p->beta;
-    double sigma = p->sigma;
-    double ratio = p->ratio;
-    
-    double lambda_minus = beta * sigma * sigma * std::pow(1 - std::sqrt(ratio), 2);
-    double lambda_plus = beta * sigma * sigma * std::pow(1 + std::sqrt(ratio), 2);
-
-    if (x <= lambda_minus || x >= lambda_plus) {
-        return 0.0;
-    }
-
-    double var = beta * sigma * sigma;
-    double term1 = std::sqrt((lambda_plus - x) * (x - lambda_minus));
-    double term2 = 2.0 * M_PI * ratio * var * x;
-    
-    return term1 / term2;
-}
-
-static double mp_cdf(double x, double beta, double sigma, double ratio) {
-    if (ratio <= 0 || ratio >= 1) return 0.0;
-    
-    double lambda_minus = beta * sigma * sigma * std::pow(1 - std::sqrt(ratio), 2);
-    double lambda_plus = beta * sigma * sigma * std::pow(1 + std::sqrt(ratio), 2);
-    
-    if (x >= lambda_plus) return 1.0;
-    if (x <= lambda_minus) return 0.0;
-
-    mp_params params = {beta, sigma, ratio};
-
-    gsl_function F;
-    F.function = &mp_pdf;
-    F.params = &params;
-
-    gsl_integration_workspace *w = gsl_integration_workspace_alloc(2000);
-    double result, error;
-
-    gsl_integration_qags(&F, lambda_minus, x, 0, 1e-9, 2000, w, &result, &error);
-    
-    gsl_integration_workspace_free(w);
-
-    if (result < 0) result = 0;
-    if (result > 1) result = 1;
-    
-    return result;
-}
-
 class MPDistribution {
 private:
     double beta_;
     double sigma_;
     double ratio_;
-    std::unordered_map<double, double> cdf_cache_;
     
+    std::pair<double, double> get_lambdas() const {
+        double lambda_minus = beta_ * sigma_ * sigma_ * std::pow(1 - std::sqrt(ratio_), 2);
+        double lambda_plus = beta_ * sigma_ * sigma_ * std::pow(1 + std::sqrt(ratio_), 2);
+        return {lambda_minus, lambda_plus};
+    }
+    
+    double cdf_aux_r(double x, double lambda_minus, double lambda_plus) const {
+        return std::sqrt((lambda_plus - x) / (x - lambda_minus));
+    }
+    
+    double cdf_aux_f(double x) const {
+        auto [lambda_minus, lambda_plus] = get_lambdas();
+        double var = beta_ * sigma_ * sigma_;
+        
+        if (x <= lambda_minus) return 0.0;
+        if (x >= lambda_plus) return 1.0;
+        
+        double r = cdf_aux_r(x, lambda_minus, lambda_plus);
+        
+        double first_arctan;
+        if (x == lambda_minus) {
+            first_arctan = M_PI / 2;
+        } else {
+            first_arctan = std::atan((r * r - 1) / (2 * r));
+        }
+        
+        double second_arctan;
+        if (x == lambda_minus) {
+            second_arctan = M_PI / 2;
+        } else {
+            second_arctan = std::atan((lambda_minus * r * r - lambda_plus) / (2 * var * (1 - ratio_) * r));
+        }
+        
+        double sqrt_term = std::sqrt((lambda_plus - x) * (x - lambda_minus));
+        
+        return 1.0 / (2 * M_PI * ratio_) * (
+            M_PI * ratio_ + 
+            (1.0 / var) * sqrt_term - 
+            (1 + ratio_) * first_arctan + 
+            (1 - ratio_) * second_arctan
+        );
+    }
+
 public:
     MPDistribution(double beta, double sigma, double ratio) 
         : beta_(beta), sigma_(sigma), ratio_(ratio) {}
     
-    double cdf(double x) {
-        auto it = cdf_cache_.find(x);
-        if (it != cdf_cache_.end()) {
-            return it->second;
+    double cdf(double x) const {
+        auto [lambda_minus, lambda_plus] = get_lambdas();
+        
+        if (x >= lambda_plus) return 1.0;
+        if (x <= lambda_minus) return 0.0;
+        
+        double result = cdf_aux_f(x);
+        
+        if (ratio_ <= 1.0) {
+            return result;
         }
         
-        double result = mp_cdf(x, beta_, sigma_, ratio_);
-        cdf_cache_[x] = result;
-        return result;
+        if (x >= lambda_minus && x <= lambda_plus) {
+            result += (ratio_ - 1) / (2 * ratio_);
+        }
+        
+        return std::clamp(result, 0.0, 1.0);
     }
 };
+
+static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
+    std::vector<double> sv(singular_values.data(), singular_values.data() + singular_values.size());
+    
+    boost::sort::pdqsort(sv.begin(), sv.end());
+    
+    double ub_init = sv[size_t(sv.size() * 0.9)];
+    
+    std::vector<double> filtered_sv;
+    filtered_sv.reserve(sv.size());
+    for(const auto& s : sv) {
+        if(s < ub_init) {
+            filtered_sv.push_back(s);
+        }
+    }
+    
+    size_t n = filtered_sv.size();
+    double lm = filtered_sv[size_t(n * 0.05)];
+    double lp = filtered_sv[size_t(n * 0.95)];
+    
+    double a = std::sqrt(lm);
+    double b = std::sqrt(lp);
+    
+    double sigma = std::sqrt((a + b) * (a + b) / 4.0);
+    double ratio = std::sqrt((b - a) / (a + b));
+        
+    return {1.0, sigma, ratio};
+}
 
 static void median_filter(const float* src, float* dst, int width, int height) {
     cv::Mat src_mat(height, width, CV_32F);
@@ -360,17 +366,22 @@ static void median_filter(const float* src, float* dst, int width, int height) {
 }
 
 static void box_blur(const float* src, float* dst, int width, int height, float sigma) {
-    int kernel_size = std::ceil(sigma * 2);
-    if (kernel_size % 2 == 0) kernel_size++;
-
     cv::Mat src_mat(height, width, CV_32F);
+    cv::Mat temp_mat;
+    cv::Mat dst_mat;
+    
     memcpy(src_mat.data, src, width * height * sizeof(float));
     
-    cv::Mat dst_mat;
-    cv::boxFilter(src_mat, dst_mat, -1, cv::Size(kernel_size, kernel_size), 
-                    cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
+    cv::boxFilter(src_mat, temp_mat, -1, cv::Size(sigma, sigma), 
+                cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
     
-    memcpy(dst, dst_mat.ptr<float>(), width * height * sizeof(float));
+    cv::boxFilter(temp_mat, dst_mat, -1, cv::Size(sigma, sigma), 
+                cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
+    
+    cv::boxFilter(dst_mat, temp_mat, -1, cv::Size(sigma, sigma), 
+                cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
+    
+    memcpy(dst, temp_mat.ptr<float>(), width * height * sizeof(float));
 }
 
 static void process_plane_spanns(const float* src, const float* ref, const float* dref, 
@@ -379,11 +390,8 @@ static void process_plane_spanns(const float* src, const float* ref, const float
     
     std::vector<float> temp_ref(width * height);
     std::vector<float> temp_dref(width * height);
-    std::vector<float> temp_buf(width * height);
+    std::vector<float> T(width * height);
     std::vector<float> mask(width * height);
-    std::vector<float> orig_buf(width * height);
-    
-    memcpy(orig_buf.data(), src, width * height * sizeof(float));
     
     const float* ref_ptr = ref;
     const float* dref_ptr = dref;
@@ -400,44 +408,41 @@ static void process_plane_spanns(const float* src, const float* ref, const float
     
     generate_mask(src, width, height, gamma, mask.data());
     
-    memcpy(dst, src, width * height * sizeof(float));
+    memcpy(T.data(), src, width * height * sizeof(float));
     
     for (int step = 0; step < passes; step++) {
-        Eigen::Map<const Eigen::MatrixXf> orig(orig_buf.data(), height, width);
-        Eigen::Map<const Eigen::MatrixXf> dref_mat(dref_ptr, height, width);
-        
-        Eigen::MatrixXf noise = dref_mat - orig;
-        
-        Eigen::BDCSVD<Eigen::MatrixXf> svd(orig, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        Eigen::MatrixXf T_mat = Eigen::Map<const Eigen::MatrixXf>(T.data(), height, width);
+        Eigen::MatrixXf ref_mat = Eigen::Map<const Eigen::MatrixXf>(ref_ptr, height, width);
+
+        Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+        Eigen::MatrixXf noise = ref_mat - T_mat;
         Eigen::BDCSVD<Eigen::MatrixXf> svd_noise(noise, Eigen::ComputeThinU | Eigen::ComputeThinV);
-        
-        Eigen::VectorXf S = svd.singularValues();
+
+        Eigen::VectorXf S = svd_T.singularValues();
         Eigen::VectorXf S_noise = svd_noise.singularValues();
-        
+
         auto [beta, sigma, ratio] = fit_mp_distribution(S_noise);
         MPDistribution mp_dist(beta, sigma, ratio);
-            
+
         for (int i = 0; i < S.size(); i++) {
             double cdf_val = mp_dist.cdf(S(i));
             S(i) = S(i) - S(i) * (1.0 - cdf_val) * (1.0 - tol);
         }
 
+        Eigen::MatrixXf result = svd_T.matrixU() * S.asDiagonal() * svd_T.matrixV().transpose();
 
-        Eigen::MatrixXf result = svd.matrixU() * S.asDiagonal() * svd.matrixV().transpose();
-
-        Eigen::Map<Eigen::MatrixXf>(temp_buf.data(), height, width) = result;
-
+        Eigen::Map<Eigen::MatrixXf>(T.data(), height, width) = result;
+        
         for (int i = 0; i < width * height; i++) {
-            float lb = std::min(orig_buf[i], ref_ptr[i]);
-            float ub = std::max(orig_buf[i], ref_ptr[i]);
-            dst[i] = std::clamp(temp_buf[i], lb, ub);
+            T[i] = mask[i] * T[i] + (1.0f - mask[i]) * dref_ptr[i];
         }
-
-        memcpy(orig_buf.data(), dst, width * height * sizeof(float));
     }
-
+    
     for (int i = 0; i < width * height; i++) {
-        dst[i] = mask[i] * dst[i] + (1.0f - mask[i]) * dref_ptr[i];
+        float lb = std::min(src[i], ref_ptr[i]);
+        float ub = std::max(src[i], ref_ptr[i]);
+        dst[i] = std::clamp(T[i], lb, ub);
     }
 }
 
