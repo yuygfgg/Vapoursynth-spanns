@@ -23,41 +23,75 @@ link_args = []
 
 # BLAS/LAPACK handling
 if host_system == 'darwin'
+
   # macOS: Use Accelerate framework
   link_args += ['-framework', 'Accelerate']
   compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE']
+
 else
-  # Linux/other: Try different BLAS/LAPACK implementations for x86 and ARM
-  if host_cpu == 'x86' or host_cpu == 'x86_64' or host_cpu.startswith('arm')
-    # Try MKL first
+
+  # Try MKL first for x86 platforms
+  mkl_deps = []
+
+  if host_cpu == 'x86' or host_cpu == 'x86_64'
     mkl_deps = [
       dependency('mkl-static-lp64-iomp', required: false),
       dependency('mkl-dynamic-lp64-iomp', required: false),
       dependency('mkl', required: false)
     ]
-    
-    # Try OpenBLAS
-    openblas_dep = dependency('openblas', required: false)
-    
-    # Generic BLAS/LAPACK
-    blas_dep = dependency('blas', required: false)
-    lapacke_dep = dependency('lapacke', required: false)
-    
-    # Priority: MKL > OpenBLAS > Generic BLAS/LAPACK
-    if mkl_deps[0].found() or mkl_deps[1].found() or mkl_deps[2].found()
-      foreach mkl : mkl_deps
-        if mkl.found()
-          blas_lapack_dep = [mkl]
-          compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE', '-DMKL_LP64']
-          break
-        endif
-      endforeach
-    elif openblas_dep.found()
-      blas_lapack_dep = [openblas_dep]
-      compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE']
-    elif blas_dep.found() and lapacke_dep.found()
-      blas_lapack_dep = [blas_dep, lapacke_dep]
-      compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE']
+  endif
+
+  # Try ARMPL for non-macOS ARM platforms
+  armpl_dep = []
+  if host_cpu.startswith('arm') and host_system != 'darwin'
+    armpl_dep = [dependency('armpl', required: false)]
+  endif
+
+  # Try OpenBLAS
+  openblas_dep = dependency('openblas', required: false)
+  
+  # Generic BLAS/LAPACK
+  blas_dep = dependency('blas', required: false)
+  lapacke_dep = dependency('lapacke', required: false)
+  
+  # Priority: MKL/ARMPL > OpenBLAS > Generic BLAS/LAPACK
+  found_high_perf = false
+  
+  # Check MKL if available
+  if mkl_deps.length() > 0 and (mkl_deps[0].found() or mkl_deps[1].found() or mkl_deps[2].found())
+    foreach mkl : mkl_deps
+      if mkl.found()
+        blas_lapack_dep = [mkl]
+        compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE', '-DMKL_LP64']
+        found_high_perf = true
+        break
+      endif
+    endforeach
+  endif
+  
+  # Check ARMPL if available and MKL not found
+  if not found_high_perf and armpl_dep.length() > 0 and armpl_dep[0].found()
+    blas_lapack_dep = armpl_dep
+    compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE']
+    found_high_perf = true
+  endif
+  
+  # Try OpenBLAS if no high-performance library found
+  if not found_high_perf and openblas_dep.found()
+    blas_lapack_dep = [openblas_dep]
+    compile_args += ['-DEIGEN_USE_BLAS', '-DEIGEN_USE_LAPACKE']
+    found_high_perf = true
+  endif
+  
+  # Fall back to generic BLAS/LAPACK if nothing else is found
+  if not found_high_perf
+    if blas_dep.found()
+      blas_lapack_dep += [blas_dep]
+      compile_args += ['-DEIGEN_USE_BLAS']
+    endif
+    if lapacke_dep.found()
+      blas_lapack_dep += [lapacke_dep]
+      compile_args += ['-DEIGEN_USE_LAPACKE']
     endif
   endif
 endif
@@ -78,15 +112,9 @@ wavelib_src = [
     'spanns/wavelib/src/wtmath.c',
 ]
 
-wavelib_lib = static_library('wavelib',
-    wavelib_src,
-    include_directories: include_directories('spanns/wavelib/header')
-)
-
-wavelib_dep = declare_dependency(
-    link_with: wavelib_lib,
-    include_directories: include_directories('spanns/wavelib/header')
-)
+sources = [
+  'spanns/spanns.cpp'
+] + wavelib_src
 
 # VapourSynth handling
 if gcc_syntax
@@ -97,13 +125,10 @@ else
   install_dir = get_option('libdir') / 'vapoursynth'
 endif
 
-sources = [
-  'spanns/spanns.cpp'
-]
-
 shared_module('spanns', sources,
-  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep, wavelib_dep] + blas_lapack_dep,
+  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep] + blas_lapack_dep,
   link_args: link_args,
+  include_directories: include_directories('spanns/wavelib/header'),
   install: true,
   install_dir: install_dir,
   gnu_symbol_visibility: 'hidden'

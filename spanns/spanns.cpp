@@ -33,12 +33,8 @@ static void wavelet_transform(const cv::Mat& input, const char* wavelet_type, cv
     wave_object obj;
     wt2_object wt;
     
-    if (strcmp(wavelet_type, "bior1.1") == 0) {
-        obj = wave_init("bior1.1");
-    } else {
-        obj = wave_init("coif1");
-    }
-    
+    obj = wave_init(wavelet_type);
+
     int rows = input.rows;
     int cols = input.cols;
     
@@ -114,7 +110,6 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
         cv::min(B, cv::Scalar(1.0f), B); 
         cv::max(B, cv::Scalar(0.0f), B);
     } else {
-        // std::cerr<<"thresh > min_val!"<<std::endl;
         B = cv::Mat::zeros(B.size(), CV_32F);
     }
     
