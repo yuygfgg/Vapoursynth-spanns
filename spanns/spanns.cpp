@@ -1,15 +1,8 @@
-#include <ostream>
-#include <stdlib.h>
-#include <iostream>
-#include <string.h>
-#include <math.h>
 #include <algorithm>
-#include <unordered_map>
 #include <vector>
 #include "VapourSynth4.h"
 #include "VSHelper4.h"
 #include <boost/sort/pdqsort/pdqsort.hpp>
-#include <Eigen/Dense>
 #include <Eigen/SVD>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>

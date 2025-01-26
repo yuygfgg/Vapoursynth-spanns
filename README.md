@@ -6,7 +6,7 @@ Also check [spanns](https://github.com/Gabriella-Chaos/spanns)
 
 ## Build Instructions
 
-[Opencv](https://github.com/opencv/opencv), [Eigen](https://github.com/PX4/eigen) [Boost](https://www.boost.org/) and [GSL](https://www.gnu.org/software/gsl/) are required.
+[Opencv](https://github.com/opencv/opencv), [Eigen](https://github.com/PX4/eigen), [Boost](https://www.boost.org/) and [GSL](https://www.gnu.org/software/gsl/) are required.
 
 ```bash
 meson setup build
@@ -16,8 +16,8 @@ ninja -C build install
 
 ## Usage
 
-```python
-spans = core.spanns.SPANNS(VideoNode clip[, VideoNode ref1, VideoNode ref2, float sigma=1.0, float tol=0.7, float gamma=0.5, int passes=2])
+```
+core.spanns.SPANNS(VideoNode clip[, VideoNode ref1, VideoNode ref2, float sigma=1.0, float tol=0.7, float gamma=0.5, int passes=2])
 ```
 
 ## Parameter Description
