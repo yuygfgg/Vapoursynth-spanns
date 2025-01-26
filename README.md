@@ -6,7 +6,7 @@ Also check [spanns](https://github.com/Gabriella-Chaos/spanns)
 
 ## Build Instructions
 
-[Opencv](https://github.com/opencv/opencv), [Eigen](https://github.com/PX4/eigen) and [GSL](https://www.gnu.org/software/gsl/) are required.
+[Opencv](https://github.com/opencv/opencv), [Eigen](https://github.com/PX4/eigen) [Boost](https://www.boost.org/) and [GSL](https://www.gnu.org/software/gsl/) are required.
 
 ```bash
 meson setup build

@@ -13,6 +13,7 @@
 #include <Eigen/SVD>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#include <gsl/gsl_multimin.h>
 
 #include "wavelib.h"
 
@@ -189,32 +190,128 @@ public:
     }
 };
 
-static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
-    std::vector<double> sv(singular_values.data(), singular_values.data() + singular_values.size());
+struct MpFitData {
+    const std::vector<double> *x; 
+};
+
+static double mp_pdf(double val, double beta, double sigma, double ratio) {
+    double var = beta * sigma * sigma;
+    double lambda_minus = var * std::pow(1.0 - std::sqrt(ratio), 2.0);
+    double lambda_plus  = var * std::pow(1.0 + std::sqrt(ratio), 2.0);
+
+    if (val < lambda_minus || val > lambda_plus || val <= 0.0)
+        return 1e-30;
+
+    double numerator = std::sqrt((lambda_plus - val)*(val - lambda_minus));
+    double denom = 2.0 * M_PI * ratio * var * val;
+
+    if (denom < 1e-30) denom=1e-30;
+
+    return numerator / denom;
+}
+
+static double nll_function(const gsl_vector *v, void *params) {
+    double sigma = gsl_vector_get(v, 0);
+    double ratio = gsl_vector_get(v, 1);
     
-    boost::sort::pdqsort(sv.begin(), sv.end());
+    if (sigma <= 0.0 || ratio <= 0.0 || ratio >= 1.0)
+        return GSL_POSINF;
+
+    double beta = 1.0;
+    MpFitData *d = (MpFitData *)(params);
+    const std::vector<double> &x = *(d->x);
+
+    double lambda_minus = beta * sigma * sigma * std::pow(1.0 - std::sqrt(ratio), 2);
+    double lambda_plus = beta * sigma * sigma * std::pow(1.0 + std::sqrt(ratio), 2);
     
-    double ub_init = sv[size_t(sv.size() * 0.9)];
+    double nll = 0.0;
+    int valid_points = 0;
     
-    std::vector<double> filtered_sv;
-    filtered_sv.reserve(sv.size());
-    for(const auto& s : sv) {
-        if(s < ub_init) {
-            filtered_sv.push_back(s);
+    for (auto val : x) {
+        if (val > lambda_minus && val < lambda_plus) {
+            double p = mp_pdf(val, beta, sigma, ratio);
+            nll -= std::log(p);
+            valid_points++;
         }
     }
     
+    if (valid_points < x.size() * 0.5)
+        return GSL_POSINF;
+
+    return nll;
+}
+
+std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<double> &sorted_sv) {
+    double ub_init = sorted_sv[size_t(sorted_sv.size() * 0.9)];
+    std::vector<double> filtered_sv;
+    for (auto s : sorted_sv)
+        if (s < ub_init)
+            filtered_sv.push_back(s);
+
+
+    MpFitData data;
+    data.x = &filtered_sv;
+
+    gsl_multimin_function f;
+    f.f = &nll_function;
+    f.n = 2;
+    f.params = &data;
+
+    gsl_vector *x_start = gsl_vector_alloc(2);
+
     size_t n = filtered_sv.size();
     double lm = filtered_sv[size_t(n * 0.05)];
     double lp = filtered_sv[size_t(n * 0.95)];
-    
     double a = std::sqrt(lm);
     double b = std::sqrt(lp);
+    double sigma_init = std::sqrt((a + b) * (a + b) / 4.0);
+    double ratio_init = std::sqrt((b - a) / (a + b));
+
+    if (sigma_init < 1e-5) sigma_init = 1e-5;
+    if (ratio_init < 1e-5) ratio_init = 1e-5;
+    if (ratio_init > 0.9999) ratio_init = 0.9999;
+
+    gsl_vector_set(x_start, 0, sigma_init);
+    gsl_vector_set(x_start, 1, ratio_init);
+
+    gsl_multimin_fminimizer *fminimizer = nullptr;
+    const gsl_multimin_fminimizer_type *T = gsl_multimin_fminimizer_nmsimplex2;
     
-    double sigma = std::sqrt((a + b) * (a + b) / 4.0);
-    double ratio = std::sqrt((b - a) / (a + b));
-        
-    return {1.0, sigma, ratio};
+    fminimizer = gsl_multimin_fminimizer_alloc(T, f.n);
+    
+    gsl_vector *step_size = gsl_vector_alloc(2);
+    gsl_vector_set(step_size, 0, sigma_init * 0.1);
+    gsl_vector_set(step_size, 1, 0.1);
+
+    int status = gsl_multimin_fminimizer_set(fminimizer, &f, x_start, step_size);
+
+    const size_t MAX_ITER = 114514;
+    size_t iter = 0;
+    do {
+        iter++;
+        status = gsl_multimin_fminimizer_iterate(fminimizer);
+        if (status) break;
+
+        double cur_size = gsl_multimin_fminimizer_size(fminimizer);
+        status = gsl_multimin_test_size(cur_size, 1e-7);
+
+    } while (status == GSL_CONTINUE && iter < MAX_ITER);
+
+    double sigma_opt = gsl_vector_get(fminimizer->x, 0);
+    double ratio_opt = gsl_vector_get(fminimizer->x, 1);
+
+    gsl_multimin_fminimizer_free(fminimizer);
+    gsl_vector_free(x_start);
+    gsl_vector_free(step_size);
+
+    return {1.0, sigma_opt, ratio_opt};
+}
+
+static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
+    std::vector<double> sv(singular_values.data(), singular_values.data() + singular_values.size());
+    boost::sort::pdqsort(sv.begin(), sv.end());
+
+    return fit_mp_distribution_gsl(sv);
 }
 
 static void median_filter(const float* src, float* dst, int width, int height) {

@@ -15,6 +15,7 @@ gcc_syntax = cxx.get_argument_syntax() == 'gcc'
 eigen_dep = dependency('eigen3', required: true)
 opencv_dep = dependency('opencv4', modules: ['core', 'imgproc'], required: true)
 boost_dep = dependency('boost', required: true)
+gsl_dep = dependency('gsl', required: true)
 
 # Initialize BLAS/LAPACK dependencies and compile args
 blas_lapack_dep = []
@@ -126,7 +127,7 @@ else
 endif
 
 shared_module('spanns', sources,
-  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep] + blas_lapack_dep,
+  dependencies: [vapoursynth_dep, eigen_dep, opencv_dep, boost_dep, gsl_dep] + blas_lapack_dep,
   link_args: link_args,
   include_directories: include_directories('spanns/wavelib/header'),
   install: true,
