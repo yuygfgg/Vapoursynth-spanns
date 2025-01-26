@@ -472,12 +472,34 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
     d.has_ref2 = err != 1; 
 
     const VSVideoInfo *vi = vsapi->getVideoInfo(d.node);
+
+    if(d.has_ref1){
+        const VSVideoInfo *ref1i = vsapi->getVideoInfo(d.ref1);
+        [[unlikely]] if(!vsh::isSameVideoFormat(&vi->format, &ref1i->format)){
+            vsapi->mapSetError(out, "Spanns: clip and ref1 must have same format!");
+            vsapi->freeNode(d.node);
+            vsapi->freeNode(d.ref1);
+            return;
+        }
+    }
+
+    if (d.has_ref2){
+        const VSVideoInfo *ref2i = vsapi->getVideoInfo(d.ref2);
+        [[unlikely]] if (!vsh::isSameVideoFormat(&vi->format, &ref2i->format)){
+            vsapi->mapSetError(out, "Spanns: clip and ref2 must have same format!");
+            vsapi->freeNode(d.node);
+            vsapi->freeNode(d.ref2);
+            return;
+        }
+    }
     
-    if (!vsh::isConstantVideoFormat(vi) || vi->format.sampleType != stFloat || 
+    [[unlikely]] if (!vsh::isConstantVideoFormat(vi) || vi->format.sampleType != stFloat || 
         vi->format.bitsPerSample != 32 ||
         (vi->format.numPlanes != 1 && vi->format.numPlanes != 3)) {
-        vsapi->mapSetError(out, "Spanns: only constant format 32bit float input supported");
+        vsapi->mapSetError(out, "Spanns: only constant format 32bit float input supported!");
         vsapi->freeNode(d.node);
+        if (d.has_ref1) vsapi->freeNode(d.ref1);
+        if (d.has_ref2) vsapi->freeNode(d.ref2);
         return;
     }
     
@@ -486,12 +508,33 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
     
     d.tol = (float)vsapi->mapGetFloat(in, "tol", 0, &err);
     if (err) d.tol = 0.7f;
+    [[unlikely]] if (d.tol > 1 || d.tol < 0) {
+        vsapi->mapSetError(out, "Spanns: tol must be a float in range [0, 1]!");
+        vsapi->freeNode(d.node);
+        if (d.has_ref1) vsapi->freeNode(d.ref1);
+        if (d.has_ref2) vsapi->freeNode(d.ref2);
+        return;
+    }
     
     d.gamma = (float)vsapi->mapGetFloat(in, "gamma", 0, &err);
     if (err) d.gamma = 0.5f;
+    [[unlikely]] if (d.gamma > 1 || d.gamma < 0) {
+        vsapi->mapSetError(out, "Spanns: gamma must be a float in range [0, 1]!");
+        vsapi->freeNode(d.node);
+        if (d.has_ref1) vsapi->freeNode(d.ref1);
+        if (d.has_ref2) vsapi->freeNode(d.ref2);
+        return;
+    }
     
     d.passes = (int)vsapi->mapGetInt(in, "passes", 0, &err);
     if (err) d.passes = 2;
+    [[unlikely]] if (d.passes < 1) {
+        vsapi->mapSetError(out, "Spanns: passes must be integer >= 1!");
+        vsapi->freeNode(d.node);
+        if (d.has_ref1) vsapi->freeNode(d.ref1);
+        if (d.has_ref2) vsapi->freeNode(d.ref2);
+        return;
+    }
     
     data = (SpannsData *)malloc(sizeof(d));
     *data = d;
