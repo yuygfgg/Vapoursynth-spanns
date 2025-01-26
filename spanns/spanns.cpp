@@ -336,31 +336,57 @@ static void box_blur(const float* src, float* dst, int width, int height, float 
     memcpy(dst, temp_mat.ptr<float>(), width * height * sizeof(float));
 }
 
-static void process_plane_spanns(const float* src, const float* ref, const float* dref, 
-                                float* dst, int width, int height, float sigma, float tol, float gamma, int passes) {
+static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
+                                const float* ref, ptrdiff_t ref_stride,
+                                const float* dref, ptrdiff_t dref_stride,
+                                float* dst, ptrdiff_t dst_stride,
+                                int width, int height,
+                                float sigma, float tol, float gamma, int passes) {
     if (!src || !dst) return;
     
-    std::vector<float> temp_ref(width * height);
-    std::vector<float> temp_dref(width * height);
+    std::vector<float> src_buf(width * height);
+    std::vector<float> ref_buf(width * height);
+    std::vector<float> dref_buf(width * height);
+    std::vector<float> dst_buf(width * height);
     std::vector<float> T(width * height);
     std::vector<float> mask(width * height);
+    
+    for (int y = 0; y < height; y++) {
+        memcpy(src_buf.data() + y * width, 
+               reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(src) + y * src_stride),
+               width * sizeof(float));
+    }
     
     const float* ref_ptr = ref;
     const float* dref_ptr = dref;
     
     if (!ref_ptr) {
-        median_filter(src, temp_ref.data(), width, height);
-        ref_ptr = temp_ref.data();
+        median_filter(src_buf.data(), ref_buf.data(), width, height);
+        ref_ptr = ref_buf.data();
+    } else {
+        for (int y = 0; y < height; y++) {
+            memcpy(ref_buf.data() + y * width,
+                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(ref) + y * ref_stride),
+                   width * sizeof(float));
+        }
+        ref_ptr = ref_buf.data();
     }
     
     if (!dref_ptr) {
-        box_blur(src, temp_dref.data(), width, height, sigma);
-        dref_ptr = temp_dref.data();
+        box_blur(src_buf.data(), dref_buf.data(), width, height, sigma);
+        dref_ptr = dref_buf.data();
+    } else {
+        for (int y = 0; y < height; y++) {
+            memcpy(dref_buf.data() + y * width,
+                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(dref) + y * dref_stride),
+                   width * sizeof(float));
+        }
+        dref_ptr = dref_buf.data();
     }
     
-    generate_mask(src, width, height, gamma, mask.data());
+    generate_mask(src_buf.data(), width, height, gamma, mask.data());
     
-    memcpy(T.data(), src, width * height * sizeof(float));
+    memcpy(T.data(), src_buf.data(), width * height * sizeof(float));
     
     for (int step = 0; step < passes; step++) {
         Eigen::MatrixXf T_mat = Eigen::Map<const Eigen::MatrixXf>(T.data(), height, width);
@@ -396,6 +422,12 @@ static void process_plane_spanns(const float* src, const float* ref, const float
         float ub = std::max(src[i], ref_ptr[i]);
         dst[i] = std::clamp(T[i], lb, ub);
     }
+
+    for (int y = 0; y < height; y++) {
+        memcpy(reinterpret_cast<uint8_t*>(dst) + y * dst_stride,
+               T.data() + y * width,
+               width * sizeof(float));
+    }
 }
 
 static const VSFrame *VS_CC spannsGetFrame(int n, int activationReason, void *instanceData, 
@@ -423,10 +455,18 @@ static const VSFrame *VS_CC spannsGetFrame(int n, int activationReason, void *in
             const float *ref2p = ref2 ? (const float *)vsapi->getReadPtr(ref2, p) : nullptr;
             float *dstp = (float *)vsapi->getWritePtr(dst, p);
             
+            ptrdiff_t src_stride = vsapi->getStride(src, p);
+            ptrdiff_t ref1_stride = ref1 ? vsapi->getStride(ref1, p) : 0;
+            ptrdiff_t ref2_stride = ref2 ? vsapi->getStride(ref2, p) : 0;
+            ptrdiff_t dst_stride = vsapi->getStride(dst, p);
+            
             int plane_width = vsapi->getFrameWidth(src, p);
             int plane_height = vsapi->getFrameHeight(src, p);
             
-            process_plane_spanns(srcp, ref1p, ref2p, dstp, 
+            process_plane_spanns(srcp, src_stride,
+                                ref1p, ref1_stride,
+                                ref2p, ref2_stride,
+                                dstp, dst_stride,
                                 plane_width, plane_height,
                                 d->sigma, d->tol, d->gamma, d->passes);
         }
