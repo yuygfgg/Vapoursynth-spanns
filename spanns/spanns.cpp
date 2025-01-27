@@ -204,13 +204,13 @@ static double mp_pdf(double val, double beta, double sigma, double ratio) {
 }
 
 static double nll_function(const gsl_vector *v, void *params) {
-    double sigma = gsl_vector_get(v, 0);
-    double ratio = gsl_vector_get(v, 1);
+    double beta = gsl_vector_get(v, 0);
+    double sigma = gsl_vector_get(v, 1);
+    double ratio = gsl_vector_get(v, 2);
     
-    if (sigma <= 0.0 || ratio <= 0.0 || ratio >= 1.0)
+    if (beta <= 0.0 || sigma <= 0.0 || ratio <= 0.0 || ratio >= 1.0)
         return GSL_POSINF;
 
-    double beta = 1.0;
     MpFitData *d = (MpFitData *)(params);
     const std::vector<double> &x = *(d->x);
 
@@ -221,24 +221,28 @@ static double nll_function(const gsl_vector *v, void *params) {
     int valid_points = 0;
     
     for (auto val : x) {
-        if (val > lambda_minus && val < lambda_plus) {
+        if (val < lambda_minus) {
+            valid_points++;
+        } else if (val < lambda_plus) {
             double p = mp_pdf(val, beta, sigma, ratio);
             nll -= std::log(p);
             valid_points++;
+        } else {
+            break;
         }
     }
     
-    if (valid_points < x.size() * 0.5)
+    if (valid_points < x.size() * 0.3)
         return GSL_POSINF;
 
-    return nll;
+    return nll / valid_points * x.size();
 }
 
 std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<double> &sorted_sv) {
-    double ub_init = sorted_sv[size_t(sorted_sv.size() * 0.9)];
+    double ub = sorted_sv[size_t(sorted_sv.size() * 0.99)];
     std::vector<double> filtered_sv;
     for (auto s : sorted_sv)
-        if (s < ub_init)
+        if (s < ub)
             filtered_sv.push_back(s);
 
 
@@ -247,10 +251,10 @@ std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<dou
 
     gsl_multimin_function f;
     f.f = &nll_function;
-    f.n = 2;
+    f.n = 3;
     f.params = &data;
 
-    gsl_vector *x_start = gsl_vector_alloc(2);
+    gsl_vector *x_start = gsl_vector_alloc(3);
 
     size_t n = filtered_sv.size();
     double lm = filtered_sv[size_t(n * 0.05)];
@@ -264,17 +268,21 @@ std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<dou
     if (ratio_init < 1e-5) ratio_init = 1e-5;
     if (ratio_init > 0.9999) ratio_init = 0.9999;
 
-    gsl_vector_set(x_start, 0, sigma_init);
-    gsl_vector_set(x_start, 1, ratio_init);
+    double beta_init = 1.;
+
+    gsl_vector_set(x_start, 0, beta_init);
+    gsl_vector_set(x_start, 1, sigma_init);
+    gsl_vector_set(x_start, 2, ratio_init);
 
     gsl_multimin_fminimizer *fminimizer = nullptr;
     const gsl_multimin_fminimizer_type *T = gsl_multimin_fminimizer_nmsimplex2;
     
     fminimizer = gsl_multimin_fminimizer_alloc(T, f.n);
     
-    gsl_vector *step_size = gsl_vector_alloc(2);
-    gsl_vector_set(step_size, 0, sigma_init * 0.1);
-    gsl_vector_set(step_size, 1, 0.1);
+    gsl_vector *step_size = gsl_vector_alloc(3);
+    gsl_vector_set(step_size, 0, 0.1);
+    gsl_vector_set(step_size, 1, sigma_init * 0.1);
+    gsl_vector_set(step_size, 2, 0.1);
 
     int status = gsl_multimin_fminimizer_set(fminimizer, &f, x_start, step_size);
 
@@ -290,14 +298,15 @@ std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<dou
 
     } while (status == GSL_CONTINUE && iter < MAX_ITER);
 
-    double sigma_opt = gsl_vector_get(fminimizer->x, 0);
-    double ratio_opt = gsl_vector_get(fminimizer->x, 1);
+    double beta_opt = gsl_vector_get(fminimizer->x, 0);
+    double sigma_opt = gsl_vector_get(fminimizer->x, 1);
+    double ratio_opt = gsl_vector_get(fminimizer->x, 2);
 
     gsl_multimin_fminimizer_free(fminimizer);
     gsl_vector_free(x_start);
     gsl_vector_free(step_size);
 
-    return {1.0, sigma_opt, ratio_opt};
+    return {beta_opt, sigma_opt, ratio_opt};
 }
 
 static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
