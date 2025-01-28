@@ -328,16 +328,18 @@ static void box_blur(const float* src, float* dst, int width, int height, float 
     cv::Mat src_mat(height, width, CV_32F);
     cv::Mat temp_mat;
     cv::Mat dst_mat;
+
+    int kernal_size = static_cast<int>(std::round(sigma)) * 2 + 1; 
     
     memcpy(src_mat.data, src, width * height * sizeof(float));
     
-    cv::boxFilter(src_mat, temp_mat, -1, cv::Size(sigma, sigma), 
+    cv::boxFilter(src_mat, temp_mat, -1, cv::Size(kernal_size, kernal_size), 
                 cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
     
-    cv::boxFilter(temp_mat, dst_mat, -1, cv::Size(sigma, sigma), 
+    cv::boxFilter(temp_mat, dst_mat, -1, cv::Size(kernal_size, kernal_size), 
                 cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
     
-    cv::boxFilter(dst_mat, temp_mat, -1, cv::Size(sigma, sigma), 
+    cv::boxFilter(dst_mat, temp_mat, -1, cv::Size(kernal_size, kernal_size), 
                 cv::Point(-1,-1), true, cv::BORDER_DEFAULT);
     
     memcpy(dst, temp_mat.ptr<float>(), width * height * sizeof(float));
@@ -397,9 +399,14 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
         Eigen::MatrixXf T_mat = Eigen::Map<const Eigen::MatrixXf>(T.data(), height, width);
         Eigen::MatrixXf lref_mat = Eigen::Map<const Eigen::MatrixXf>(lref_ptr, height, width);
 
+        Eigen::MatrixXf noise = dref_mat - T_mat;
+
+        if ((noise.maxCoeff() - noise minCoeff()) < 1e-6)
+            break;
+
         Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-        Eigen::MatrixXf noise = lref_mat - T_mat;
+        Eigen::MatrixXf noise = dref_mat - T_mat;
         Eigen::BDCSVD<Eigen::MatrixXf> svd_noise(noise, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
         Eigen::VectorXf S = svd_T.singularValues();
