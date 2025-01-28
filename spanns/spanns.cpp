@@ -324,18 +324,6 @@ static std::tuple<double, double, double> fit_mp_distribution(const Eigen::Vecto
 }
 
 
-// Not Needed Anymore
-// static void median_filter(const float* src, float* dst, int width, int height) {
-//     cv::Mat src_mat(height, width, CV_32F);
-//     memcpy(src_mat.data, src, width * height * sizeof(float));
-    
-//     cv::Mat dst_mat;
-//     cv::medianBlur(src_mat, dst_mat, 3);
-    
-//     memcpy(dst, dst_mat.ptr<float>(), width * height * sizeof(float));
-// }
-
-
 static void box_blur(const float* src, float* dst, int width, int height, float sigma) {
     cv::Mat src_mat(height, width, CV_32F);
     cv::Mat temp_mat;
