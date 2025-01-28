@@ -23,6 +23,7 @@ typedef struct {
     bool has_ref2;
 } SpannsData;
 
+
 static void wavelet_transform(const cv::Mat& input, const char* wavelet_type, cv::Mat& details) {
     wave_object obj;
     wt2_object wt;
@@ -68,6 +69,7 @@ static void wavelet_transform(const cv::Mat& input, const char* wavelet_type, cv
     wt2_free(wt);
 }
 
+
 static void generate_mask(const float* src, int width, int height, float gamma, float* mask) {
     cv::Mat src_mat(height, width, CV_32F);
     memcpy(src_mat.data, src, width * height * sizeof(float));
@@ -109,6 +111,7 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
     
     memcpy(mask, B.ptr<float>(), width * height * sizeof(float));
 }
+
 
 class MPDistribution {
 private:
@@ -183,9 +186,11 @@ public:
     }
 };
 
+
 struct MpFitData {
     const std::vector<double> *x; 
 };
+
 
 static double mp_pdf(double val, double beta, double sigma, double ratio) {
     double var = beta * sigma * sigma;
@@ -203,12 +208,13 @@ static double mp_pdf(double val, double beta, double sigma, double ratio) {
     return numerator / denom;
 }
 
+
 static double nll_function(const gsl_vector *v, void *params) {
     double beta = gsl_vector_get(v, 0);
     double sigma = gsl_vector_get(v, 1);
     double ratio = gsl_vector_get(v, 2);
     
-    if (beta <= 0.0 || sigma <= 0.0 || ratio <= 0.0 || ratio >= 1.0)
+    if (beta <= 1e-2 || sigma <= 1e-3 || ratio <= 1e-6 || ratio >= 1.0)
         return GSL_POSINF;
 
     MpFitData *d = (MpFitData *)(params);
@@ -232,11 +238,12 @@ static double nll_function(const gsl_vector *v, void *params) {
         }
     }
     
-    if (valid_points < x.size() * 0.3)
+    if (valid_points < x.size() * 0.5)
         return GSL_POSINF;
 
-    return nll / valid_points * x.size();
+    return nll;
 }
+
 
 std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<double> &sorted_sv) {
     double ub = sorted_sv[size_t(sorted_sv.size() * 0.99)];
@@ -244,7 +251,6 @@ std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<dou
     for (auto s : sorted_sv)
         if (s < ub)
             filtered_sv.push_back(s);
-
 
     MpFitData data;
     data.x = &filtered_sv;
@@ -309,6 +315,7 @@ std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<dou
     return {beta_opt, sigma_opt, ratio_opt};
 }
 
+
 static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
     std::vector<double> sv(singular_values.data(), singular_values.data() + singular_values.size());
     boost::sort::pdqsort(sv.begin(), sv.end());
@@ -316,15 +323,18 @@ static std::tuple<double, double, double> fit_mp_distribution(const Eigen::Vecto
     return fit_mp_distribution_gsl(sv);
 }
 
-static void median_filter(const float* src, float* dst, int width, int height) {
-    cv::Mat src_mat(height, width, CV_32F);
-    memcpy(src_mat.data, src, width * height * sizeof(float));
+
+// Not Needed Anymore
+// static void median_filter(const float* src, float* dst, int width, int height) {
+//     cv::Mat src_mat(height, width, CV_32F);
+//     memcpy(src_mat.data, src, width * height * sizeof(float));
     
-    cv::Mat dst_mat;
-    cv::medianBlur(src_mat, dst_mat, 3);
+//     cv::Mat dst_mat;
+//     cv::medianBlur(src_mat, dst_mat, 3);
     
-    memcpy(dst, dst_mat.ptr<float>(), width * height * sizeof(float));
-}
+//     memcpy(dst, dst_mat.ptr<float>(), width * height * sizeof(float));
+// }
+
 
 static void box_blur(const float* src, float* dst, int width, int height, float sigma) {
     cv::Mat src_mat(height, width, CV_32F);
@@ -344,6 +354,7 @@ static void box_blur(const float* src, float* dst, int width, int height, float 
     
     memcpy(dst, temp_mat.ptr<float>(), width * height * sizeof(float));
 }
+
 
 static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
                                 const float* ref, ptrdiff_t ref_stride,
@@ -369,10 +380,7 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
     const float* ref_ptr = ref;
     const float* dref_ptr = dref;
     
-    if (!ref_ptr) {
-        median_filter(src_buf.data(), ref_buf.data(), width, height);
-        ref_ptr = ref_buf.data();
-    } else {
+    if (ref_ptr) {
         for (int y = 0; y < height; y++) {
             memcpy(ref_buf.data() + y * width,
                    reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(ref) + y * ref_stride),
@@ -425,11 +433,13 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
             T[i] = mask[i] * T[i] + (1.0f - mask[i]) * dref_ptr[i];
         }
     }
-    
-    for (int i = 0; i < width * height; i++) {
-        float lb = std::min(src[i], ref_ptr[i]);
-        float ub = std::max(src[i], ref_ptr[i]);
-        T[i] = std::clamp(T[i], lb, ub);
+
+    if (ref_ptr) {
+        for (int i = 0; i < width * height; i++) {
+            float lb = std::min(src[i], ref_ptr[i]);
+            float ub = std::max(src[i], ref_ptr[i]);
+            T[i] = std::clamp(T[i], lb, ub);
+        }
     }
 
     for (int y = 0; y < height; y++) {
@@ -457,13 +467,13 @@ static const VSFrame *VS_CC spannsGetFrame(int n, int activationReason, void *in
                                             vsapi->getFrameWidth(src, 0), 
                                             vsapi->getFrameHeight(src, 0), 
                                             src, core);
-        
+
         for (int p = 0; p < vsapi->getVideoFrameFormat(src)->numPlanes; p++) {
             const float *srcp = (const float *)vsapi->getReadPtr(src, p);
             const float *ref1p = ref1 ? (const float *)vsapi->getReadPtr(ref1, p) : nullptr;
             const float *ref2p = ref2 ? (const float *)vsapi->getReadPtr(ref2, p) : nullptr;
             float *dstp = (float *)vsapi->getWritePtr(dst, p);
-            
+
             ptrdiff_t src_stride = vsapi->getStride(src, p);
             ptrdiff_t ref1_stride = ref1 ? vsapi->getStride(ref1, p) : 0;
             ptrdiff_t ref2_stride = ref2 ? vsapi->getStride(ref2, p) : 0;
