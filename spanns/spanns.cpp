@@ -357,15 +357,15 @@ static void box_blur(const float* src, float* dst, int width, int height, float 
 
 
 static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
-                                const float* ref, ptrdiff_t ref_stride,
                                 const float* dref, ptrdiff_t dref_stride,
+                                const float* lref, ptrdiff_t lref_stride,
                                 float* dst, ptrdiff_t dst_stride,
                                 int width, int height,
                                 float sigma, float tol, float gamma, int passes) {
     if (!src || !dst) return;
     
     std::vector<float> src_buf(width * height);
-    std::vector<float> ref_buf(width * height);
+    std::vector<float> lref_buf(width * height);
     std::vector<float> dref_buf(width * height);
     std::vector<float> dst_buf(width * height);
     std::vector<float> T(width * height);
@@ -377,16 +377,16 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
                width * sizeof(float));
     }
     
-    const float* ref_ptr = ref;
+    const float* lref_ptr = lref;
     const float* dref_ptr = dref;
     
-    if (ref_ptr) {
+    if (lref_ptr) {
         for (int y = 0; y < height; y++) {
-            memcpy(ref_buf.data() + y * width,
-                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(ref) + y * ref_stride),
+            memcpy(lref_buf.data() + y * width,
+                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(lref) + y * lref_stride),
                    width * sizeof(float));
         }
-        ref_ptr = ref_buf.data();
+        lref_ptr = lref_buf.data();
     }
     
     if (!dref_ptr) {
@@ -407,11 +407,11 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
     
     for (int step = 0; step < passes; step++) {
         Eigen::MatrixXf T_mat = Eigen::Map<const Eigen::MatrixXf>(T.data(), height, width);
-        Eigen::MatrixXf ref_mat = Eigen::Map<const Eigen::MatrixXf>(ref_ptr, height, width);
+        Eigen::MatrixXf lref_mat = Eigen::Map<const Eigen::MatrixXf>(lref_ptr, height, width);
 
         Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-        Eigen::MatrixXf noise = ref_mat - T_mat;
+        Eigen::MatrixXf noise = lref_mat - T_mat;
         Eigen::BDCSVD<Eigen::MatrixXf> svd_noise(noise, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
         Eigen::VectorXf S = svd_T.singularValues();
@@ -434,10 +434,10 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
         }
     }
 
-    if (ref_ptr) {
+    if (lref_ptr) {
         for (int i = 0; i < width * height; i++) {
-            float lb = std::min(src[i], ref_ptr[i]);
-            float ub = std::max(src[i], ref_ptr[i]);
+            float lb = std::min(src[i], lref_ptr[i]);
+            float ub = std::max(src[i], lref_ptr[i]);
             T[i] = std::clamp(T[i], lb, ub);
         }
     }
