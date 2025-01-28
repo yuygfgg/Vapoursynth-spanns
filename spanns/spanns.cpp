@@ -429,7 +429,7 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
     for (int i = 0; i < width * height; i++) {
         float lb = std::min(src[i], ref_ptr[i]);
         float ub = std::max(src[i], ref_ptr[i]);
-        dst[i] = std::clamp(T[i], lb, ub);
+        T[i] = std::clamp(T[i], lb, ub);
     }
 
     for (int y = 0; y < height; y++) {
