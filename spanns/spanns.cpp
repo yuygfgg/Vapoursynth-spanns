@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <limits>
 #include <vector>
 #include "VapourSynth4.h"
 #include "VSHelper4.h"
@@ -9,6 +10,9 @@
 #include <gsl/gsl_multimin.h>
 
 #include "wavelib.h"
+
+
+const double _XMAX = std::numeric_limits<double>::max();
 
 
 typedef struct {
@@ -224,29 +228,37 @@ static double nll_function(const gsl_vector *v, void *params) {
     double lambda_plus = beta * sigma * sigma * std::pow(1.0 + std::sqrt(ratio), 2);
     
     double nll = 0.0;
-    int valid_points = 0;
+    int invalid_points = 0;
     
     for (auto val : x) {
         if (val < lambda_minus) {
-            valid_points++;
+            invalid_points++;
         } else if (val < lambda_plus) {
             double p = mp_pdf(val, beta, sigma, ratio);
             nll -= std::log(p);
-            valid_points++;
         } else {
-            break;
+            invalid_points++;
         }
     }
+
+    float penalty = - std::log(_XMAX) * invalid_points * 3  // 3 times max loss
     
     if (valid_points < x.size() * 0.5)
         return GSL_POSINF;
 
-    return nll;
+    return nll + penalty;
 }
 
 
-std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<double> &sorted_sv) {
-    double ub = sorted_sv[size_t(sorted_sv.size() * 0.99)];
+std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<double> &sorted_sv, float cutoff) {
+
+    double ub = 0.;
+    if cutoff < 1. {
+        ub = sorted_sv[size_t(sorted_sv.size() * cutoff)];
+    } else {
+        ub = sorted_sv[sorted_sv.size() - size_t(cutoff)];
+    }
+
     std::vector<double> filtered_sv;
     for (auto s : sorted_sv)
         if (s < ub)
@@ -316,11 +328,11 @@ std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<dou
 }
 
 
-static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values) {
+static std::tuple<double, double, double> fit_mp_distribution(const Eigen::VectorXf& singular_values, float cutoff) {
     std::vector<double> sv(singular_values.data(), singular_values.data() + singular_values.size());
     boost::sort::pdqsort(sv.begin(), sv.end());
 
-    return fit_mp_distribution_gsl(sv);
+    return fit_mp_distribution_gsl(sv, cutoff);
 }
 
 
@@ -347,16 +359,14 @@ static void box_blur(const float* src, float* dst, int width, int height, float 
 
 
 static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
-                                const float* dref, ptrdiff_t dref_stride,
-                                const float* lref, ptrdiff_t lref_stride,
+                                const float* ref, ptrdiff_t ref_stride,
                                 float* dst, ptrdiff_t dst_stride,
                                 int width, int height,
-                                float sigma, float tol, float gamma, int passes) {
+                                float sigma, float tol, float cutoff) {
     if (!src || !dst) return;
     
     std::vector<float> src_buf(width * height);
-    std::vector<float> lref_buf(width * height);
-    std::vector<float> dref_buf(width * height);
+    std::vector<float> ref_buf(width * height);
     std::vector<float> dst_buf(width * height);
     std::vector<float> T(width * height);
     std::vector<float> mask(width * height);
@@ -367,74 +377,52 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
                width * sizeof(float));
     }
     
-    const float* lref_ptr = lref;
-    const float* dref_ptr = dref;
+    const float* ref_ptr = ref;
     
-    if (lref_ptr) {
+    if (ref_ptr) {
         for (int y = 0; y < height; y++) {
-            memcpy(lref_buf.data() + y * width,
-                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(lref) + y * lref_stride),
+            memcpy(ref_buf.data() + y * width,
+                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(ref) + y * ref_stride),
                    width * sizeof(float));
         }
-        lref_ptr = lref_buf.data();
-    }
-    
-    if (!dref_ptr) {
-        box_blur(src_buf.data(), dref_buf.data(), width, height, sigma);
-        dref_ptr = dref_buf.data();
+        ref_ptr = ref_buf.data();
     } else {
-        for (int y = 0; y < height; y++) {
-            memcpy(dref_buf.data() + y * width,
-                   reinterpret_cast<const float*>(reinterpret_cast<const uint8_t*>(dref) + y * dref_stride),
-                   width * sizeof(float));
-        }
-        dref_ptr = dref_buf.data();
+        box_blur(src_buf.data(), ref_buf.data(), width, height, sigma);
+        ref_ptr = ref_buf.data();
     }
-    
-    generate_mask(src_buf.data(), width, height, gamma, mask.data());
     
     memcpy(T.data(), src_buf.data(), width * height * sizeof(float));
-    
-    for (int step = 0; step < passes; step++) {
-        Eigen::MatrixXf T_mat = Eigen::Map<const Eigen::MatrixXf>(T.data(), height, width);
-        Eigen::MatrixXf lref_mat = Eigen::Map<const Eigen::MatrixXf>(lref_ptr, height, width);
 
-        Eigen::MatrixXf noise = dref_mat - T_mat;
+    Eigen::MatrixXf T_mat = Eigen::Map<const Eigen::MatrixXf>(T.data(), height, width);
+    Eigen::MatrixXf ref_mat = Eigen::Map<const Eigen::MatrixXf>(ref_ptr, height, width);
 
-        if ((noise.maxCoeff() - noise minCoeff()) < 1e-6)
-            break;
+    Eigen::MatrixXf noise = ref_mat - T_mat;
 
-        Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    if ((noise.maxCoeff() - noise minCoeff()) < 1e-6)
+        break;
 
-        Eigen::MatrixXf noise = dref_mat - T_mat;
-        Eigen::BDCSVD<Eigen::MatrixXf> svd_noise(noise, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    Eigen::BDCSVD<Eigen::MatrixXf> svd_noise(noise, Eigen::ComputeThinU | Eigen::ComputeThinV);
 
-        Eigen::VectorXf S = svd_T.singularValues();
-        Eigen::VectorXf S_noise = svd_noise.singularValues();
+    Eigen::VectorXf S = svd_T.singularValues();
+    Eigen::VectorXf S_noise = svd_noise.singularValues();
 
-        auto [beta, sigma, ratio] = fit_mp_distribution(S_noise);
-        MPDistribution mp_dist(beta, sigma, ratio);
+    auto [beta, sigma, ratio] = fit_mp_distribution(S_noise);
+    MPDistribution mp_dist(beta, sigma, ratio);
 
-        for (int i = 0; i < S.size(); i++) {
-            double cdf_val = mp_dist.cdf(S(i));
-            S(i) = S(i) - S(i) * (1.0 - cdf_val) * (1.0 - tol);
-        }
-
-        Eigen::MatrixXf result = svd_T.matrixU() * S.asDiagonal() * svd_T.matrixV().transpose();
-
-        Eigen::Map<Eigen::MatrixXf>(T.data(), height, width) = result;
-        
-        for (int i = 0; i < width * height; i++) {
-            T[i] = mask[i] * T[i] + (1.0f - mask[i]) * dref_ptr[i];
-        }
+    for (int i = 0; i < S.size(); i++) {
+        double cdf_val = mp_dist.cdf(S(i));
+        S(i) = S(i) - S(i) * (1.0 - cdf_val) * (1.0 - tol);
     }
 
-    if (lref_ptr) {
-        for (int i = 0; i < width * height; i++) {
-            float lb = std::min(src[i], lref_ptr[i]);
-            float ub = std::max(src[i], lref_ptr[i]);
-            T[i] = std::clamp(T[i], lb, ub);
-        }
+    Eigen::MatrixXf result = svd_T.matrixU() * S.asDiagonal() * svd_T.matrixV().transpose();
+
+    Eigen::Map<Eigen::MatrixXf>(T.data(), height, width) = result;
+
+    for (int i = 0; i < width * height; i++) {
+        float lb = std::min(src[i], T[i]);
+        float ub = std::max(src[i], T[i]);
+        T[i] = std::clamp(ref_ptr[i], lb, ub);
     }
 
     for (int y = 0; y < height; y++) {
@@ -451,12 +439,10 @@ static const VSFrame *VS_CC spannsGetFrame(int n, int activationReason, void *in
 
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
-        if (d->has_ref1) vsapi->requestFrameFilter(n, d->ref1, frameCtx);
-        if (d->has_ref2) vsapi->requestFrameFilter(n, d->ref2, frameCtx);
+        if (d->has_ref) vsapi->requestFrameFilter(n, d->ref, frameCtx);
     } else if (activationReason == arAllFramesReady) {
         const VSFrame *src = vsapi->getFrameFilter(n, d->node, frameCtx);
-        const VSFrame *ref1 = d->has_ref1 ? vsapi->getFrameFilter(n, d->ref1, frameCtx) : nullptr;
-        const VSFrame *ref2 = d->has_ref2 ? vsapi->getFrameFilter(n, d->ref2, frameCtx) : nullptr;
+        const VSFrame *ref = d->has_ref ? vsapi->getFrameFilter(n, d->ref, frameCtx) : nullptr;
         
         VSFrame *dst = vsapi->newVideoFrame(vsapi->getVideoFrameFormat(src), 
                                             vsapi->getFrameWidth(src, 0), 
@@ -465,29 +451,25 @@ static const VSFrame *VS_CC spannsGetFrame(int n, int activationReason, void *in
 
         for (int p = 0; p < vsapi->getVideoFrameFormat(src)->numPlanes; p++) {
             const float *srcp = (const float *)vsapi->getReadPtr(src, p);
-            const float *ref1p = ref1 ? (const float *)vsapi->getReadPtr(ref1, p) : nullptr;
-            const float *ref2p = ref2 ? (const float *)vsapi->getReadPtr(ref2, p) : nullptr;
+            const float *refp = ref ? (const float *)vsapi->getReadPtr(ref, p) : nullptr;
             float *dstp = (float *)vsapi->getWritePtr(dst, p);
 
             ptrdiff_t src_stride = vsapi->getStride(src, p);
-            ptrdiff_t ref1_stride = ref1 ? vsapi->getStride(ref1, p) : 0;
-            ptrdiff_t ref2_stride = ref2 ? vsapi->getStride(ref2, p) : 0;
+            ptrdiff_t ref_stride = ref ? vsapi->getStride(ref, p) : 0;
             ptrdiff_t dst_stride = vsapi->getStride(dst, p);
             
             int plane_width = vsapi->getFrameWidth(src, p);
             int plane_height = vsapi->getFrameHeight(src, p);
             
             process_plane_spanns(srcp, src_stride,
-                                ref1p, ref1_stride,
-                                ref2p, ref2_stride,
+                                refp, ref_stride,
                                 dstp, dst_stride,
                                 plane_width, plane_height,
-                                d->sigma, d->tol, d->gamma, d->passes);
+                                d->sigma, d->tol, d->cutoff);
         }
         
         vsapi->freeFrame(src);
-        if (ref1) vsapi->freeFrame(ref1);
-        if (ref2) vsapi->freeFrame(ref2);
+        if (ref) vsapi->freeFrame(ref);
         
         return dst;
     }
@@ -499,8 +481,7 @@ static const VSFrame *VS_CC spannsGetFrame(int n, int activationReason, void *in
 static void VS_CC spannsFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
     SpannsData *d = (SpannsData *)instanceData;
     vsapi->freeNode(d->node);
-    if (d->ref1) vsapi->freeNode(d->ref1);
-    if (d->ref2) vsapi->freeNode(d->ref2);
+    if (d->ref) vsapi->freeNode(d->ref);
     free(d);
 
     (void) core;
@@ -513,29 +494,17 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
     int err;
     
     d.node = vsapi->mapGetNode(in, "clip", 0, 0);
-    d.ref1 = vsapi->mapGetNode(in, "ref1", 0, &err);
-    d.has_ref1 = err != 1;
-    d.ref2 = vsapi->mapGetNode(in, "ref2", 0, &err);
-    d.has_ref2 = err != 1; 
+    d.ref = vsapi->mapGetNode(in, "ref", 0, &err);
+    d.has_ref = err != 1;
 
     const VSVideoInfo *vi = vsapi->getVideoInfo(d.node);
 
-    if(d.has_ref1){
-        const VSVideoInfo *ref1i = vsapi->getVideoInfo(d.ref1);
+    if(d.has_ref){
+        const VSVideoInfo *refi = vsapi->getVideoInfo(d.ref);
         [[unlikely]] if(!vsh::isSameVideoFormat(&vi->format, &ref1i->format)){
             vsapi->mapSetError(out, "Spanns: clip and ref1 must have same format!");
             vsapi->freeNode(d.node);
-            vsapi->freeNode(d.ref1);
-            return;
-        }
-    }
-
-    if (d.has_ref2){
-        const VSVideoInfo *ref2i = vsapi->getVideoInfo(d.ref2);
-        [[unlikely]] if (!vsh::isSameVideoFormat(&vi->format, &ref2i->format)){
-            vsapi->mapSetError(out, "Spanns: clip and ref2 must have same format!");
-            vsapi->freeNode(d.node);
-            vsapi->freeNode(d.ref2);
+            vsapi->freeNode(d.ref);
             return;
         }
     }
@@ -545,13 +514,18 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
         (vi->format.numPlanes != 1 && vi->format.numPlanes != 3)) {
         vsapi->mapSetError(out, "Spanns: only constant format 32bit float input supported!");
         vsapi->freeNode(d.node);
-        if (d.has_ref1) vsapi->freeNode(d.ref1);
-        if (d.has_ref2) vsapi->freeNode(d.ref2);
+        if (d.has_ref) vsapi->freeNode(d.ref);
         return;
     }
     
     d.sigma = (float)vsapi->mapGetFloat(in, "sigma", 0, &err);
     if (err) d.sigma = 1.0f;
+    [[unlikely]] if (d.sigma < 1.0f) {
+        vsapi->mapSetError(out, "Spanns: sigma must be greater or equal to 1.)!");
+        vsapi->freeNode(d.node);
+        if (d.has_ref) vsapi->freeNode(d.ref);
+        return;
+    }
     
     d.tol = (float)vsapi->mapGetFloat(in, "tol", 0, &err);
     if (err) d.tol = 0.7f;
@@ -563,23 +537,12 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
         return;
     }
     
-    d.gamma = (float)vsapi->mapGetFloat(in, "gamma", 0, &err);
-    if (err) d.gamma = 0.5f;
-    [[unlikely]] if (d.gamma > 1 || d.gamma < 0) {
-        vsapi->mapSetError(out, "Spanns: gamma must be a float in range [0, 1]!");
+    d.cutoff = (float)vsapi->mapGetFloat(in, "cutoff", 0, &err);
+    if (err) d.cutoff = 0.9f;
+    [[unlikely]] if (d.cutoff < 0.5) {
+        vsapi->mapSetError(out, "Spanns: gamma must be greater than 0.5!");
         vsapi->freeNode(d.node);
-        if (d.has_ref1) vsapi->freeNode(d.ref1);
-        if (d.has_ref2) vsapi->freeNode(d.ref2);
-        return;
-    }
-    
-    d.passes = (int)vsapi->mapGetInt(in, "passes", 0, &err);
-    if (err) d.passes = 2;
-    [[unlikely]] if (d.passes < 1) {
-        vsapi->mapSetError(out, "Spanns: passes must be integer >= 1!");
-        vsapi->freeNode(d.node);
-        if (d.has_ref1) vsapi->freeNode(d.ref1);
-        if (d.has_ref2) vsapi->freeNode(d.ref2);
+        if (d.has_ref) vsapi->freeNode(d.ref);
         return;
     }
     
@@ -598,9 +561,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI
                         "SPANNS Denoising", VS_MAKE_VERSION(1, 0), 
                         VAPOURSYNTH_API_VERSION, 0, plugin);
     vspapi->registerFunction("SPANNS",
-                            "clip:vnode;ref1:vnode:opt;ref2:vnode:opt;"
-                            "sigma:float:opt;tol:float:opt;gamma:float:opt;"
-                            "passes:int:opt;",
+                            "clip:vnode;ref:vnode:opt;"
+                            "sigma:float:opt;tol:float:opt;cutoff:float:opt;",
                             "clip:vnode;",
                             spannsCreate, nullptr, plugin);
 }
