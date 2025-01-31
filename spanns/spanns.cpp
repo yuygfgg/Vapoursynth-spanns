@@ -238,7 +238,7 @@ static double nll_function(const gsl_vector *v, void *params) {
         }
     }
 
-    float penalty = - std::log(_XMAX) * invalid_points * 3;  // 3 times max loss
+    float penalty = std::log(_XMAX) * invalid_points * 3;  // 3 times max loss
     
     if (invalid_points > x.size() * 0.5)
         return GSL_POSINF;
