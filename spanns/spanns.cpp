@@ -398,7 +398,7 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
     if ((noise.maxCoeff() - noise.minCoeff()) < 1e-6) {
         for (int y = 0; y < height; y++) {
             memcpy(reinterpret_cast<uint8_t*>(dst) + y * dst_stride,
-                   reinterpret_cast<uint8_t*>(src) + y * src_stride,
+                   reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(src) + y * src_stride),
                    width * sizeof(float));
         }
         return;
