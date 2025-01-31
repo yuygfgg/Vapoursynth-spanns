@@ -24,7 +24,7 @@ typedef struct {
     bool has_ref;
 } SpannsData;
 
-
+/* TODO: DWT Adaptive Denoising
 static void wavelet_transform(const cv::Mat& input, const char* wavelet_type, cv::Mat& details) {
     wave_object obj;
     wt2_object wt;
@@ -112,7 +112,7 @@ static void generate_mask(const float* src, int width, int height, float gamma, 
     
     memcpy(mask, B.ptr<float>(), width * height * sizeof(float));
 }
-
+*/
 
 class MPDistribution {
 private:
@@ -238,7 +238,7 @@ static double nll_function(const gsl_vector *v, void *params) {
         }
     }
 
-    float penalty = - std::log(_XMAX) * invalid_points * 3  // 3 times max loss
+    float penalty = - std::log(_XMAX) * invalid_points * 3;  // 3 times max loss
     
     if (valid_points < x.size() * 0.5)
         return GSL_POSINF;
@@ -250,7 +250,7 @@ static double nll_function(const gsl_vector *v, void *params) {
 std::tuple<double, double, double> fit_mp_distribution_gsl(const std::vector<double> &sorted_sv, float cutoff) {
 
     double ub = 0.;
-    if cutoff < 1. {
+    if (cutoff < 1.) {
         ub = sorted_sv[size_t(sorted_sv.size() * cutoff)];
     } else {
         ub = sorted_sv[sorted_sv.size() - size_t(cutoff)];
@@ -395,7 +395,7 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
 
     Eigen::MatrixXf noise = ref_mat - T_mat;
 
-    if ((noise.maxCoeff() - noise minCoeff()) < 1e-6)
+    if ((noise.maxCoeff() - noise.minCoeff()) < 1e-6)
         break;
 
     Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
@@ -404,8 +404,8 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
     Eigen::VectorXf S = svd_T.singularValues();
     Eigen::VectorXf S_noise = svd_noise.singularValues();
 
-    auto [beta, sigma, ratio] = fit_mp_distribution(S_noise);
-    MPDistribution mp_dist(beta, sigma, ratio);
+    auto [beta, sig, ratio] = fit_mp_distribution(S_noise, cutoff);
+    MPDistribution mp_dist(beta, sig, ratio);
 
     for (int i = 0; i < S.size(); i++) {
         double cdf_val = mp_dist.cdf(S(i));
@@ -498,7 +498,7 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
 
     if(d.has_ref){
         const VSVideoInfo *refi = vsapi->getVideoInfo(d.ref);
-        [[unlikely]] if(!vsh::isSameVideoFormat(&vi->format, &ref1i->format)){
+        [[unlikely]] if(!vsh::isSameVideoFormat(&vi->format, &refi->format)){
             vsapi->mapSetError(out, "Spanns: clip and ref1 must have same format!");
             vsapi->freeNode(d.node);
             vsapi->freeNode(d.ref);
@@ -529,8 +529,7 @@ static void VS_CC spannsCreate(const VSMap *in, VSMap *out, void *userData,
     [[unlikely]] if (d.tol > 1 || d.tol < 0) {
         vsapi->mapSetError(out, "Spanns: tol must be a float in range [0, 1]!");
         vsapi->freeNode(d.node);
-        if (d.has_ref1) vsapi->freeNode(d.ref1);
-        if (d.has_ref2) vsapi->freeNode(d.ref2);
+        if (d.has_ref) vsapi->freeNode(d.ref);
         return;
     }
     
