@@ -240,7 +240,7 @@ static double nll_function(const gsl_vector *v, void *params) {
 
     float penalty = - std::log(_XMAX) * invalid_points * 3;  // 3 times max loss
     
-    if (valid_points < x.size() * 0.5)
+    if (invalid_points > x.size() * 0.5)
         return GSL_POSINF;
 
     return nll + penalty;
@@ -395,8 +395,14 @@ static void process_plane_spanns(const float* src, ptrdiff_t src_stride,
 
     Eigen::MatrixXf noise = ref_mat - T_mat;
 
-    if ((noise.maxCoeff() - noise.minCoeff()) < 1e-6)
-        break;
+    if ((noise.maxCoeff() - noise.minCoeff()) < 1e-6) {
+        for (int y = 0; y < height; y++) {
+            memcpy(reinterpret_cast<uint8_t*>(dst) + y * dst_stride,
+                   reinterpret_cast<uint8_t*>(src) + y * src_stride,
+                   width * sizeof(float));
+        }
+        return;
+    }
 
     Eigen::BDCSVD<Eigen::MatrixXf> svd_T(T_mat, Eigen::ComputeThinU | Eigen::ComputeThinV);
     Eigen::BDCSVD<Eigen::MatrixXf> svd_noise(noise, Eigen::ComputeThinU | Eigen::ComputeThinV);
