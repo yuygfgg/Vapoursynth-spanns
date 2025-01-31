@@ -17,14 +17,11 @@ const double _XMAX = std::numeric_limits<double>::max();
 
 typedef struct {
     VSNode *node;
-    VSNode *ref1;
-    VSNode *ref2;
+    VSNode *ref;
     float sigma;
     float tol;
-    float gamma;
-    int passes;
-    bool has_ref1;
-    bool has_ref2;
+    float cutoff;
+    bool has_ref;
 } SpannsData;
 
 
