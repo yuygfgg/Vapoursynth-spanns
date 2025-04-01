@@ -2,7 +2,6 @@ project('spanns', 'cpp','c',
   default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++17'],
   license: 'GPL-3.0-or-later',
   meson_version: '>=0.51.0',
-  version: '4.1'
 )
 
 c = meson.get_compiler('c')
